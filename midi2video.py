@@ -19,9 +19,9 @@ import mydy as midi
 import sys
 import math
 import os
-from PIL import Image, ImageDraw
 from pathlib import Path
 from shutil import rmtree
+from colorsys import rgb_to_hls, hls_to_rgb
 
 
 class VirtualPiano(object):
@@ -29,37 +29,34 @@ class VirtualPiano(object):
         self.keyFrom = config.get('piano', 'keyFrom', fallback='auto')
         self.keyTo = config.get('piano', 'keyTo', fallback='auto')
         self.colorWhiteKeys = config.get('piano', 'colorWhiteKeys', fallback='#FFFFFF')
-        self.colorBlackKeys = config.get('piano', 'colorBlackKeys', fallback='#000000')
-        self.colorHighlight = config.get('piano', 'colorHighlight', fallback='#FF0000')
-        self.blackHeightRatio = float(config.get('piano', 'blackHeightRatio', fallback=0.6))
-        self.blackWidthRatio = float(config.get('piano', 'blackWidthRatio', fallback=0.6))
-        self.blackOffsetA = float(config.get('piano', 'blackOffset.A', fallback=0.8))
-        self.blackOffsetC = float(config.get('piano', 'blackOffset.C', fallback=0.6))
-        self.blackOffsetD = float(config.get('piano', 'blackOffset.D', fallback=0.8))
-        self.blackOffsetF = float(config.get('piano', 'blackOffset.F', fallback=0.6))
-        self.blackOffsetG = float(config.get('piano', 'blackOffset.G', fallback=0.7))
-        self.keyWidthWhite = 0
-        self.keyHeightWhite = 0
-        self.keyWidthBlack = 0
-        self.keyHeightBlack = 0
+        self.colorBlackKeys = config.get('piano', 'colorBlackKeys', fallback='#131313')
+        self.colorHighlight = config.get('piano', 'colorHighlight', fallback='#DE4439')
         self.amountWhiteKeys = 0
         self.pianoWidth = 0
         self.pianoHeight = 0
+
+        self.svgScaleX = 1
+        self.svgScaleY = 1
 
         self.tempDir = None
         self.tempDirShapes = None
         self.tempDirHighlight = None
         self.tempDirFrames = None
 
+        self.keySvgPaths = {}
+
     def calculateKeyWidth(self, videoWidth, videoHeight):
         self.pianoWidth = videoWidth
         self.pianoHeight = videoHeight
         self.amountWhiteKeys = self.countWhiteKeys(self.keyFrom, self.keyTo)
-        self.keyWidthWhite = self.pianoWidth/self.amountWhiteKeys
-        self.keyHeightWhite = self.pianoHeight
-        self.keyWidthBlack = self.keyWidthWhite * self.blackWidthRatio
-        self.keyHeightBlack = self.keyHeightWhite * self.blackHeightRatio
-        
+
+    def calculateSvgScales(self):
+        # white keys in our path definitions has fixed dimensions of x:100 y:200
+        realSvgWidth = self.amountWhiteKeys * 100
+        realSvgHeight = 200
+        self.svgScaleX = self.pianoWidth / realSvgWidth
+        self.svgScaleY = self.pianoHeight / realSvgHeight
+
 
     # thanks to https://stackoverflow.com/questions/712679/convert-midi-note-numbers-to-name-and-octave#answer-54546263
     def noteNumberToNoteName(self, noteNumber, appendOctave=False):
@@ -86,174 +83,136 @@ class VirtualPiano(object):
 
         return counter
 
-    def drawFullPiano(self, targetPath):
-        composition = Image.new('RGB', (self.pianoWidth, self.pianoHeight), (0, 0, 0))
-        for noteNumber in range(self.keyFrom, self.keyTo+1):
-            img = Image.new('RGBA', (self.pianoWidth, self.pianoHeight), (255, 0, 0, 0))
-            shapeImg = Image.open(self.getShapeForNoteNumber(noteNumber).resolve())
-            offsetX = round(self.getLeftOffsetForKeyPlacement(noteNumber))
-            composition.paste(shapeImg, (offsetX, 0), shapeImg)
-            composition.paste(img, (0, 0), img)
-        composition.save(targetPath.resolve(), 'JPEG')
-        return targetPath.resolve()
-
-
     def getLeftOffsetForKeyPlacement(self, noteNumber):
         numWhiteKeys = self.countWhiteKeys(self.keyFrom, noteNumber)
-        sumWhiteKeysWidth = (numWhiteKeys-1) * self.keyWidthWhite
+        sumWhiteKeysWidth = (numWhiteKeys-1) * 100
         if self.isWhiteKey(noteNumber):
             return sumWhiteKeysWidth 
 
         noteName = self.noteNumberToNoteName(noteNumber)
-        print ( "%s %s " % (noteName,  sumWhiteKeysWidth) )
+        #print ( "%s %s " % (noteName,  sumWhiteKeysWidth) )
 
         if noteName == 'A#':
-            return sumWhiteKeysWidth + self.keyWidthWhite*self.blackOffsetA
+            return sumWhiteKeysWidth + 29.1666666666 + 56.25
         if noteName == 'C#':
-            return sumWhiteKeysWidth + self.keyWidthWhite*self.blackOffsetC
+            return sumWhiteKeysWidth + 61.1111111111
         if noteName == 'D#':
-            return sumWhiteKeysWidth + self.keyWidthWhite*self.blackOffsetD
+            return sumWhiteKeysWidth + 19.4444444444 + 61.1111111111
         if noteName == 'F#':
-            return sumWhiteKeysWidth + self.keyWidthWhite*self.blackOffsetF
+            return sumWhiteKeysWidth + 56.25
         if noteName == 'G#':
-            return sumWhiteKeysWidth + self.keyWidthWhite*self.blackOffsetG
+            return sumWhiteKeysWidth + 14.5833333333 + 56.25
 
-    def getPointsForKeyShape(self, noteNumber, xLeft=None, xRight=None, isFirst="", isLast=""):
-        noteName = self.noteNumberToNoteName(noteNumber)
+    def hex2rgb(self, hexString):
+        return tuple(int(hexString.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
 
-        removeSectionLeft = True
-        if noteName in ["C", "F"]:
-            removeSectionLeft = False
+    def rgb2hex(self, rgb):
+        rgblist = list(rgb)
+        return '#%02x%02x%02x' % (rgblist[0], rgblist[1], rgblist[2])
 
-        removeSectionRight = True
-        if noteName in ["E", "B"]:
-            removeSectionRight = False
+    def lightenColor(self, color, amount=0.2):
+        rgb = list(self.hex2rgb(color))
+        return self.adjustColorLightness(rgb[0], rgb[1], rgb[2], 1 + amount)
+
+    def darkenColor(self, color, amount=0.2):
+        rgb = list(self.hex2rgb(color))
+        return self.adjustColorLightness(rgb[0], rgb[1], rgb[2], 1 - amount)
+
+    # thanks to https://news.ycombinator.com/item?id=3583564
+    def adjustColorLightness(self, r, g, b, factor):
+        h, l, s = rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
+        l = max(min(l * factor, 1.0), 0.0)
+        r, g, b = hls_to_rgb(h, l, s)
+        return self.rgb2hex((int(r * 255), int(g * 255), int(b * 255)))
+
+    def getPathChunkForNoteName(self, noteName, noteNumber):
+
+        if str(noteNumber) in self.keySvgPaths:
+            #print( "found %s: %s" % (str(noteNumber), self.keySvgPaths[str(noteNumber)]) )
+            #sys.exit()
+            return self.keySvgPaths[str(noteNumber)]
+
+        whiteW = 100
+        whiteH = 200
+        blackH = 120
+        blackDiff = whiteH - blackH
+
+        # dimensions X for narrow parts of white keys with sum 100
+        dimX = {
+            'C': [ 61.1111111111, 38.8888888889 ],
+            'D': [ 19.4444444444, 61.1111111111, 19.4444444445 ],
+            'E': [ 38.8888888889, 61.1111111111 ],
+
+            'F': [ 56.25,         43.75 ],
+            'G': [ 14.5833333333, 56.25, 29.1666666667 ],
+            'A': [ 29.1666666666, 56.25, 14.5833333333 ],
+            'B': [ 43.75,         56.25]
+        }
+
+        if noteName in ["C#", "D#", "F#", "G#", "A#"]:
+            pathChunk = "%d h 58.3333333333 V 0 h -58.3333333333" % (blackH)
+        if noteName == "C":
+            pathChunk = "200 h 100 v -%s h -%s V 0 h -%s" % (blackDiff, dimX['C'][1], dimX['C'][0])
+            if noteNumber == self.keyTo:
+                pathChunk = "200 h 100 V 0 h -100"
+        if noteName == "D":
+            pathChunk = "200 h 100 v -%s h -%s V 0 h -%s v %s h -%s" % (blackDiff, dimX['D'][2], dimX['D'][1], blackH, dimX['D'][0])
+            if noteNumber == self.keyFrom:
+                pathChunk = "200 h 100 v -%s h -%s V 0 h -%s" % (blackDiff, dimX['D'][2], dimX['D'][1] + dimX['D'][0])
+            if noteNumber == self.keyTo:
+                pathChunk = "200 h 100 V 0 h -%s v %s h -%s" % (dimX['D'][2] + dimX['D'][1], blackH, dimX['D'][0])
+        if noteName == "E":
+            pathChunk = "200 h 100 V 0 h -%s v %s h -%s" % (dimX['E'][1], blackH, dimX['E'][0])
+            if noteNumber == self.keyFrom:
+                pathChunk = "200 h 100 V 0 h -100"
+        if noteName == "F":
+            pathChunk = "200 h 100 v -%s h -%s V 0 h -%s" % (blackDiff, dimX['F'][1], dimX['F'][0])
+            if noteNumber == self.keyTo:
+                pathChunk = "200 h 100 V 0 h -100"
+        if noteName == "G":
+            pathChunk = "200 h 100 v -%s h -%s V 0 h -%s V %s h -%s" % (blackDiff, dimX['G'][2], dimX['G'][1], blackH, dimX['G'][0])
+            if noteNumber == self.keyFrom:
+                pathChunk = "200 h 100 v -%s h -%s V 0 h -%s" % (blackDiff, dimX['G'][2], dimX['G'][1] + dimX['G'][0])
+            if noteNumber == self.keyTo:
+                pathChunk = "200 h 100 V 0 h -%s v %s h -%s" % (dimX['G'][2] + dimX['G'][1], blackH, dimX['G'][0])
+        if noteName == "A":
+            pathChunk = noteNumber, "200 h 100 v -%s h -%s V 0 h -%s V %s h -%s" % (blackDiff, dimX['A'][2], dimX['A'][1], blackH, dimX['A'][0])
+            if noteNumber == self.keyFrom:
+                pathChunk = noteNumber, "200 h 100 v -%s h -%s V 0 h -%s" % (blackDiff, dimX['A'][2], dimX['A'][1] + dimX['A'][0])
+            if noteNumber == self.keyTo:
+                pathChunk = "200 h 100 V 0 h -%s v %s h -%s" % (dimX['A'][2] + dimX['A'][1], blackH, dimX['A'][0])
+        if noteName == "B":
+            pathChunk = "200 h 100 V 0 h -%s v %s h -%s" % (dimX['B'][1], blackH, dimX['B'][0])
+            if noteNumber == self.keyFrom:
+                pathChunk = "200 h 100 V 0 h -100"
+
+        self.keySvgPaths[str(noteNumber)] = pathChunk
+        return pathChunk
 
 
-        # in case we start with a white key that is not F or C
-        # do not remove section for left black key
-        if not isFirst == "" and not noteName in ["C", "F"]:
-            xLeft = 0
-            removeSectionLeft = False
+    def getSvgPathForNoteNumber(self, noteNumber, offsetX, highlight=False):
 
-        # in case we finish with a white key that is not E or B
-        # do not remove section for right black key
-        if not isLast == "" and not noteName in ["E", "B"]:
-            xRight = 0
-            removeSectionRight = False
-
-        # all white keys has same bottom line
-        points = [
-            (0, self.keyHeightWhite),           # left bottom
-            (self.keyWidthWhite, self.keyHeightWhite)   # right bottom
-        ]
-
-        if removeSectionRight == False:
-            points.append((self.keyWidthWhite, 0))            # up till we reach the top
-            points.append((xLeft, 0))                 # left until we reach right side left black key
-        else:
-            points.append((self.keyWidthWhite, self.keyHeightBlack))  # up till we reach bottom line of right black key
-            points.append((xRight, self.keyHeightBlack))      # left until we reach left side of right black key
-            points.append((xRight, 0))                # up until we reach the top
-
-        if removeSectionLeft == False:
-            points.append((0,0))                      # left until we reach right side of left white key
-        else:
-            points.append((xLeft,0))                  # left until we reach right side of left black key
-            points.append((xLeft, self.keyHeightBlack))       # down until we reach the bottom of left black key
-            points.append((0, self.keyHeightBlack))           # left until we reach the right side of left white key
-        
-        points.append((0, self.keyHeightWhite))               # back to startingpoint
-        return points
-
-    def getShapeForNoteNumber(self, noteNumber, highlight=False):
-        black = self.colorBlackKeys
-        white = self.colorWhiteKeys
-        color = self.colorHighlight
-        filename = "shape-"
-        outlineColor = "#acacac"
-        isFirstSuffix = ""
-        isLastSuffix = ""
+        colorToUse = self.colorBlackKeys
+        outlineColor = "black"
+        if self.isWhiteKey(noteNumber):
+            colorToUse = self.colorWhiteKeys
 
         if highlight:
-            black = color
-            white = color
-            filename = "shape-hl-"
+            colorToUse = self.darkenColor(self.colorHighlight)
             outlineColor = "#6e160f"
 
-        if self.keyFrom == noteNumber:
-            isFirstSuffix = "-first"
-
-        if self.keyTo == noteNumber:
-            isLastSuffix = "-last"
-
         noteLetter = self.noteNumberToNoteName(noteNumber)
-        noteLetterShapeFile = Path( '%s/%s%s%s%s.png'% (self.tempDirShapes.resolve(), filename, noteLetter, isFirstSuffix, isLastSuffix) )
 
-        if noteLetterShapeFile.is_file():
-            return noteLetterShapeFile
+        pathString = '<path fill="%s" stroke="%s" d="M%s %s Z"  transform="scale(%s, %s)" />' % (
+            colorToUse,
+            outlineColor,
+            offsetX,
+            self.getPathChunkForNoteName(noteLetter, noteNumber),
+            self.svgScaleX,
+            self.svgScaleY
+        )
 
-        shapeWidth = self.keyWidthWhite
-        shapeHeight = self.keyHeightWhite
-        fill = white
-        if not self.isWhiteKey(noteNumber):
-            shapeWidth = self.keyWidthBlack
-            shapeHeight = self.keyHeightBlack
-            points = [
-                (0, shapeHeight),           # left bottom
-                (shapeWidth, shapeHeight),  # right bottom
-                (shapeWidth, 0),            # right top
-                (0, 0),                     # left top
-                (0, shapeHeight)            # back to starting point (left bottom)
-            ]
-            fill = black
-
-        shapeImg = Image.new('RGBA', (round(shapeWidth), round(shapeHeight)), (255, 0, 0, 0))
-        draw = ImageDraw.Draw(shapeImg)
-
-        xLeft = 0
-        xRight = 0
-        if noteLetter in ["C"]:
-            xRight = self.keyWidthWhite*self.blackOffsetC
-            points = self.getPointsForKeyShape(noteNumber, xLeft, xRight, isFirstSuffix, isLastSuffix)
-        elif noteLetter in ["D"]:
-            xLeft = self.keyWidthBlack - ( self.keyWidthWhite - (self.keyWidthWhite*self.blackOffsetC) )
-            xRight = self.keyWidthWhite*self.blackOffsetD
-            points = self.getPointsForKeyShape(noteNumber, xLeft, xRight, isFirstSuffix, isLastSuffix)
-        elif noteLetter in ["E"]:
-            xLeft = self.keyWidthBlack - ( self.keyWidthWhite - (self.keyWidthWhite*self.blackOffsetD) )
-            points = self.getPointsForKeyShape(noteNumber, xLeft, xRight, isFirstSuffix, isLastSuffix)
-        elif noteLetter in ["F"]:
-            xRight = self.keyWidthWhite*self.blackOffsetF
-            points = self.getPointsForKeyShape(noteNumber, xLeft, xRight, isFirstSuffix, isLastSuffix)
-        elif noteLetter in ["G"]:
-            xLeft = self.keyWidthBlack - ( self.keyWidthWhite - (self.keyWidthWhite*self.blackOffsetF) )
-            xRight = self.keyWidthWhite*self.blackOffsetG
-            points = self.getPointsForKeyShape(noteNumber, xLeft, xRight, isFirstSuffix, isLastSuffix)
-        elif noteLetter in ["A"]:
-            xLeft = self.keyWidthBlack - ( self.keyWidthWhite - (self.keyWidthWhite*self.blackOffsetG) )
-            xRight = self.keyWidthWhite*self.blackOffsetA
-            points = self.getPointsForKeyShape(noteNumber, xLeft, xRight, isFirstSuffix, isLastSuffix)
-        elif noteLetter in ["B"]:
-            xLeft = self.keyWidthBlack - ( self.keyWidthWhite - (self.keyWidthWhite*self.blackOffsetA) )
-            points = self.getPointsForKeyShape(noteNumber, xLeft, xRight, isFirstSuffix, isLastSuffix)
-
-        draw.polygon(points, fill=fill, outline=outlineColor)
-
-        shapeImg.save(noteLetterShapeFile.resolve(), 'PNG')
-        return noteLetterShapeFile
-
-
-
-
-
-
-
-
-
-
-
-
+        return pathString
 
 
 
@@ -351,8 +310,6 @@ class Midi2Video(object):
         self.piano.tempDirFrames = self.tempDirFrames
 
     def createVideo(self):
-        baseImgPath = Path("%s/basePiano,jpg" % self.tempDir.resolve())
-        baseImg = Image.open(self.piano.drawFullPiano(baseImgPath))
 
         frameDurationMs = 1000000/self.framesPerSecond
         currentFrameStartMs = 0
@@ -361,7 +318,7 @@ class Midi2Video(object):
         for frameNum in range(1,self.videoTotalFrames+1):
             currentFrameEndMs = currentFrameStartMs + frameDurationMs
             self.updateActiveNotesForFrame(currentFrameEndMs)
-            frameFilePaths.append("file '%s'" % self.createFrameComposition(baseImg).resolve())
+            frameFilePaths.append("file '%s'" % self.createFrameComposition().resolve())
             currentFrameStartMs = currentFrameEndMs
 
         frameFilePathsFile = Path("%s/singleFrameFileList.txt" % self.tempDir.resolve())
@@ -370,13 +327,18 @@ class Midi2Video(object):
         )
 
         videoWithoutAudioFile = Path("%s/video-noaudio.mp4" % self.tempDir.resolve())
-        os.system("ffmpeg -y -f concat -safe 0 -i %s -framerate %d %s" % (frameFilePathsFile.resolve(), self.framesPerSecond, videoWithoutAudioFile.resolve()) )
+        os.system("ffmpeg -y -f concat -r %d -safe 0 -i %s -framerate %d %s" % (
+            self.framesPerSecond,
+            frameFilePathsFile.resolve(),
+            self.framesPerSecond,
+            videoWithoutAudioFile.resolve())
+        )
         videoPath = Path("%s/%s.mp4" %( self.scriptPath.resolve(),  self.midiFile.name ) )
         if config.get("video", "addAudio") == "1":
             audioWav = Path("%s/audio.wav" % self.tempDir.resolve())
             audioMp3 = Path("%s/audio.mp3" % self.tempDir.resolve())
 
-            os.system("fluidsynth -F %s /usr/share/soundfonts/FluidR3_GM.sf2 %s" % (audioWav.resolve(), self.midiFile.resolve()) )
+            os.system("fluidsynth -F %s /usr/share/soundfonts/jRhodes3.sf2 %s" % (audioWav.resolve(), self.midiFile.resolve()) )
             os.system("ffmpeg -y -i %s -vn -ar 44100 -ac 2 -b:a 192k %s" % (audioWav.resolve(), audioMp3.resolve()) )
             os.system("ffmpeg -y -i %s -i %s -c copy -map 0:v:0 -map 1:a:0 %s" % (videoWithoutAudioFile.resolve(),audioMp3.resolve(),videoPath.resolve()) )
         else:
@@ -408,33 +370,36 @@ class Midi2Video(object):
             self.openNotes[newEvent.data[0]] = newEvent.data[0]
 
 
-    def createFrameComposition(self, baseImg):
+    def createFrameComposition(self):
         sortedOpenNotes = {k: self.openNotes[k] for k in sorted(self.openNotes)}
         compHash = '-'.join(map(str, list(sortedOpenNotes.keys())))
         if compHash == "":
             compHash = "blank"
 
-        compPath = Path( '%s/%s.jpg'% (self.tempDirFrames.resolve(), compHash) )
+        compPath = Path( '%s/%s.png'% (self.tempDirFrames.resolve(), compHash) )
         if compPath.is_file():
             print ('found comp %s' % compHash)
             return compPath
 
-        composition = Image.new('RGB', (self.videoWidth, self.videoHeight), (0, 0, 0))
-        composition.paste(baseImg, (0, 0))
+        
 
-        for noteNumber in sortedOpenNotes:
-            singleNotePath = Path( '%s/%s.png'% (self.tempDirHighlight.resolve(), noteNumber) )
-            if not singleNotePath.is_file():
-                singleNoteOverlay = Image.new('RGBA', (self.videoWidth, self.videoHeight), (255, 0, 0, 0))
-                shapeImg = Image.open(self.piano.getShapeForNoteNumber(noteNumber, highlight=True).resolve())
-                offsetX = round(self.piano.getLeftOffsetForKeyPlacement(noteNumber))
-                singleNoteOverlay.paste(shapeImg, (offsetX, 0))
-                singleNoteOverlay.save(singleNotePath.resolve(), 'PNG')
-                print( "creating new frame overlay for note %s" % noteNumber )
-            singleNoteOverlay = Image.open(singleNotePath.resolve())
-            composition.paste(singleNoteOverlay, (0, 0), singleNoteOverlay)
+        pathStrings = []
+        for noteNumber in range(self.piano.keyFrom, self.piano.keyTo+1):
+            #print (noteNumber)
+            offsetX = self.piano.getLeftOffsetForKeyPlacement(noteNumber)
+            isHighlight = False
+            if noteNumber in sortedOpenNotes:
+                isHighlight = True
+            pathStrings.append( self.piano.getSvgPathForNoteNumber(noteNumber, offsetX, isHighlight) )
 
-        composition.save(compPath.resolve(), 'JPEG')
+
+        compPathSvg = Path( '%s/%s.svg'% (self.tempDirFrames.resolve(), compHash) )
+        compPathSvg.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg">%s</svg>' % '\n'.join(pathStrings)
+        )
+        # convert it to png
+        os.system("convert %s %s" % (compPathSvg.resolve(), compPath.resolve()) )
+        os.remove(compPathSvg.resolve())
         print( "creating new comp for %s" % compHash )
         return compPath
 
@@ -474,7 +439,7 @@ def main():
     # TODO given arguments have highest priority override conf values again...
 
     if validateConfig() != True:
-        print ( colored ( "exiting due to config errors...", "red" ) )
+        #print ( colored ( "exiting due to config errors...", "red" ) )
         sys.exit()
 
     m2v.createTempDirs()
@@ -524,6 +489,7 @@ def validateConfig():
         sys.exit()
 
     m2v.piano.calculateKeyWidth(m2v.videoWidth, m2v.videoHeight)
+    m2v.piano.calculateSvgScales()
 
 
     return True
