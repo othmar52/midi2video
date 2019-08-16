@@ -4,6 +4,8 @@
 # requirements
 # pip install mydy
 # ffmpeg
+# convert (imagemagick)
+# fluidsynth (optional when audio should be generated as well)
 
 
 # limitiations
@@ -14,11 +16,13 @@
 # @see https://github.com/vishnubob/python-midi/pull/62/commits/9aa092e653684c871b9ee2293ee8e640bb1cab34
 import argparse
 import logging
+import subprocess
 import configparser
 import mydy as midi
 import sys
 import math
 import os
+import time
 from pathlib import Path
 from shutil import rmtree
 from colorsys import rgb_to_hls, hls_to_rgb
@@ -31,6 +35,9 @@ class VirtualPiano(object):
         self.colorWhiteKeys = config.get('piano', 'colorWhiteKeys', fallback='#FFFFFF')
         self.colorBlackKeys = config.get('piano', 'colorBlackKeys', fallback='#131313')
         self.colorHighlight = config.get('piano', 'colorHighlight', fallback='#DE4439')
+        self.outlineColorWhiteKeys = config.get('piano', 'outlineColorWhiteKeys', fallback='#131313')
+        self.outlineColorBlackKeys = config.get('piano', 'outlineColorBlackKeys', fallback='#131313')
+        self.outlineColorHighlight = config.get('piano', 'outlineColorHighlight', fallback='#6e160f')
         self.amountWhiteKeys = 0
         self.pianoWidth = 0
         self.pianoHeight = 0
@@ -39,18 +46,16 @@ class VirtualPiano(object):
         self.svgScaleY = 1
 
         self.tempDir = None
-        self.tempDirShapes = None
-        self.tempDirHighlight = None
         self.tempDirFrames = None
 
         self.keySvgPaths = {}
 
-    def calculateKeyWidth(self, videoWidth, videoHeight):
+
+    def calculateSvgScales(self, videoWidth, videoHeight):
         self.pianoWidth = videoWidth
         self.pianoHeight = videoHeight
         self.amountWhiteKeys = self.countWhiteKeys(self.keyFrom, self.keyTo)
 
-    def calculateSvgScales(self):
         # white keys in our path definitions has fixed dimensions of x:100 y:200
         realSvgWidth = self.amountWhiteKeys * 100
         realSvgHeight = 200
@@ -176,9 +181,9 @@ class VirtualPiano(object):
             if noteNumber == self.keyTo:
                 pathChunk = "200 h 100 V 0 h -%s v %s h -%s" % (dimX['G'][2] + dimX['G'][1], blackH, dimX['G'][0])
         if noteName == "A":
-            pathChunk = noteNumber, "200 h 100 v -%s h -%s V 0 h -%s V %s h -%s" % (blackDiff, dimX['A'][2], dimX['A'][1], blackH, dimX['A'][0])
+            pathChunk = "200 h 100 v -%s h -%s V 0 h -%s V %s h -%s" % (blackDiff, dimX['A'][2], dimX['A'][1], blackH, dimX['A'][0])
             if noteNumber == self.keyFrom:
-                pathChunk = noteNumber, "200 h 100 v -%s h -%s V 0 h -%s" % (blackDiff, dimX['A'][2], dimX['A'][1] + dimX['A'][0])
+                pathChunk = "200 h 100 v -%s h -%s V 0 h -%s" % (blackDiff, dimX['A'][2], dimX['A'][1] + dimX['A'][0])
             if noteNumber == self.keyTo:
                 pathChunk = "200 h 100 V 0 h -%s v %s h -%s" % (dimX['A'][2] + dimX['A'][1], blackH, dimX['A'][0])
         if noteName == "B":
@@ -190,16 +195,17 @@ class VirtualPiano(object):
         return pathChunk
 
 
-    def getSvgPathForNoteNumber(self, noteNumber, offsetX, highlight=False):
+    def getSvgPathForNoteNumber(self, noteNumber, offsetX, highlightColor=""):
 
         colorToUse = self.colorBlackKeys
-        outlineColor = "black"
+        outlineColor = self.outlineColorBlackKeys
         if self.isWhiteKey(noteNumber):
             colorToUse = self.colorWhiteKeys
+            outlineColor = self.outlineColorWhiteKeys
 
-        if highlight:
-            colorToUse = self.darkenColor(self.colorHighlight)
-            outlineColor = "#6e160f"
+        if highlightColor:
+            colorToUse = highlightColor
+            outlineColor = self.outlineColorHighlight
 
         noteLetter = self.noteNumberToNoteName(noteNumber)
 
@@ -224,6 +230,8 @@ class Midi2Video(object):
         self.midiFile = None
         self.notesToProcess = []
         self.openNotes = {}
+        self.noteFadeIns = {}
+        self.noteFadeOuts = {}
         self.piano = VirtualPiano(config)
         self.lowestFoundNoteNumber = 200
         self.highestFoundNoteNumber = 0
@@ -231,18 +239,20 @@ class Midi2Video(object):
         self.videoWidth = int(config.get('video', 'width', fallback=800))
         self.videoHeight = int(config.get('video', 'height', fallback=200))
         self.framesPerSecond = int(config.get('video', 'frameRate', fallback=25))
+        self.soundFont = config.get('video', 'soundFont', fallback='')
 
         self.videoDurationMs = 0
         self.videoTotalFrames = 0
 
         self.tempDir = None
-        self.tempDirShapes = None
-        self.tempDirHighlight = None
         self.tempDirFrames = None
 
     # we need to add an absolute microtimestamp to each note event
+    # TODO: add configurtion like channelWhitelist and/or channelBlacklist
     def prepareNoteEvents(self):
         pattern = midi.FileIO.read_midifile(self.midiFile.resolve())
+        #print( pattern)
+        #sys.exit()
         tempo = 50000        # default: 120 BPM
         ticksPerBeat = pattern.resolution
         lastEventTick = 0
@@ -297,28 +307,34 @@ class Midi2Video(object):
             rmtree(self.tempDir.resolve())
 
         self.tempDir.mkdir(parents=True, exist_ok=True)
-        self.tempDirShapes = Path('%s/shapes' % (self.tempDir.resolve() ))
-        self.tempDirShapes.mkdir(parents=True, exist_ok=True)
-        self.tempDirHighlight = Path('%s/highlight' % (self.tempDir.resolve() ))
-        self.tempDirHighlight.mkdir(parents=True, exist_ok=True)
         self.tempDirFrames = Path('%s/frames' % (self.tempDir.resolve() ))
         self.tempDirFrames.mkdir(parents=True, exist_ok=True)
 
         self.piano.tempDir = self.tempDir
-        self.piano.tempDirShapes = self.tempDirShapes
-        self.piano.tempDirHighlight = self.tempDirHighlight
         self.piano.tempDirFrames = self.tempDirFrames
+
+        # create a dir for every single (start) note to avoid filesystem boundries
+        for noteNumber in range(self.piano.keyFrom, self.piano.keyTo+1):
+            noteDir = Path('%s/%s' % ( self.tempDirFrames.resolve(), noteNumber) )
+            noteDir.mkdir(parents=True, exist_ok=True)
+
 
     def createVideo(self):
 
         frameDurationMs = 1000000/self.framesPerSecond
         currentFrameStartMs = 0
 
+        reachedPercent = 0
+
         frameFilePaths = []
         for frameNum in range(1,self.videoTotalFrames+1):
+            #print ('.', end = '')
+            reachedPercent = int(frameNum / (self.videoTotalFrames/100))
+            print ('create single frames: %i %%' % reachedPercent, end='\r' )
+            sys.stdout.flush()
             currentFrameEndMs = currentFrameStartMs + frameDurationMs
             self.updateActiveNotesForFrame(currentFrameEndMs)
-            frameFilePaths.append("file '%s'" % self.createFrameComposition().resolve())
+            frameFilePaths.append("file '%s'" % self.createFrameComposition( frameNum ).resolve())
             currentFrameStartMs = currentFrameEndMs
 
         frameFilePathsFile = Path("%s/singleFrameFileList.txt" % self.tempDir.resolve())
@@ -327,20 +343,40 @@ class Midi2Video(object):
         )
 
         videoWithoutAudioFile = Path("%s/video-noaudio.mp4" % self.tempDir.resolve())
-        os.system("ffmpeg -y -f concat -r %d -safe 0 -i %s -framerate %d %s" % (
-            self.framesPerSecond,
-            frameFilePathsFile.resolve(),
-            self.framesPerSecond,
-            videoWithoutAudioFile.resolve())
-        )
+
+        cmd = [
+            'ffmpeg', '-y', '-f', 'concat', '-r', str(self.framesPerSecond),
+            '-safe', '0', '-i', str(frameFilePathsFile.resolve()),
+            '-pix_fmt', 'yuv420p',
+            '-framerate', str(self.framesPerSecond),
+            str(videoWithoutAudioFile.resolve())
+        ]
+        self.generalCmd(cmd, 'concat single frame pics to video')
+
+
         videoPath = Path("%s/%s.mp4" %( self.scriptPath.resolve(),  self.midiFile.name ) )
         if config.get("video", "addAudio") == "1":
             audioWav = Path("%s/audio.wav" % self.tempDir.resolve())
             audioMp3 = Path("%s/audio.mp3" % self.tempDir.resolve())
+            cmd = [
+                'fluidsynth', '-F', str(audioWav.resolve()),
+                str(self.soundFont), str(self.midiFile.resolve())
+            ]
+            self.generalCmd(cmd, 'convert midi file to audio.wav')
 
-            os.system("fluidsynth -F %s /usr/share/soundfonts/jRhodes3.sf2 %s" % (audioWav.resolve(), self.midiFile.resolve()) )
-            os.system("ffmpeg -y -i %s -vn -ar 44100 -ac 2 -b:a 192k %s" % (audioWav.resolve(), audioMp3.resolve()) )
-            os.system("ffmpeg -y -i %s -i %s -c copy -map 0:v:0 -map 1:a:0 %s" % (videoWithoutAudioFile.resolve(),audioMp3.resolve(),videoPath.resolve()) )
+            cmd = [
+                'ffmpeg','-y','-i', str(audioWav.resolve()),
+                '-vn', '-ar', '44100', '-ac', '2', '-b:a', '192k',
+                str(audioMp3.resolve())
+            ]
+            self.generalCmd(cmd, 'convert wav to mp3')
+
+            cmd = [
+                'ffmpeg', '-y', '-i', str(videoWithoutAudioFile.resolve()),
+                '-i', str(audioMp3.resolve()), '-c', 'copy', '-map', '0:v:0', '-map', '1:a:0', '-shortest',
+                str(videoPath.resolve())
+            ]
+            self.generalCmd(cmd, 'merge mp3 stream into video')
         else:
             os.rename(videoWithoutAudioFile.resolve(), videoPath.resolve())
 
@@ -352,6 +388,7 @@ class Midi2Video(object):
                 break
             #print ( "ts:%f no:%s na:%s %s vel:%s" % ( event[0] , event[1].data[0] , noteNumberToNoteName(event[1].data[0]), event[1].__class__.__name__, event[1].data[1], ) )
             collectedEvents.append(event[1])
+            self.notesToProcess.remove(event)
 
         return collectedEvents
 
@@ -365,47 +402,134 @@ class Midi2Video(object):
                 (newEvent.__class__.__name__ == "NoteOnEvent" and newEvent.data[1] == "0")
             ):
                 self.openNotes.pop(newEvent.data[0], None)
+                self.noteFadeOuts[str(newEvent.data[0])] = 1
+                #print ("updateActiveNotesForFrame::fadeOut")
+                #sys.exit()
                 continue
 
             self.openNotes[newEvent.data[0]] = newEvent.data[0]
+            self.noteFadeIns[str(newEvent.data[0])] = 1
+            #print ( "set note fade in for %s to 1" % str(newEvent.data[0]) )
+            self.noteFadeOuts.pop( str(newEvent.data[0]), None)
 
 
-    def createFrameComposition(self):
+    def createFrameComposition(self, frameNumber = 0):
         sortedOpenNotes = {k: self.openNotes[k] for k in sorted(self.openNotes)}
-        compHash = '-'.join(map(str, list(sortedOpenNotes.keys())))
-        if compHash == "":
-            compHash = "blank"
+        compHash = "f"
 
-        compPath = Path( '%s/%s.png'% (self.tempDirFrames.resolve(), compHash) )
+
+        for noteNumber in range(self.piano.keyFrom, self.piano.keyTo+1):
+            #print (noteNumber)
+            offsetX = self.piano.getLeftOffsetForKeyPlacement(noteNumber)
+            isHighlight = False
+            highlightColor = ""
+            if noteNumber in sortedOpenNotes:
+                isHighlight = True
+                highlightColor = self.piano.colorHighlight
+                if str(noteNumber) in self.noteFadeIns:
+                    highlightColor = self.getColorForFadeIn(noteNumber)
+            if str(noteNumber) in self.noteFadeOuts:
+                highlightColor = self.getColorForFadeOut(noteNumber)
+
+            if highlightColor != "":
+                sortedOpenNotes[noteNumber] = highlightColor
+                compHash += str(noteNumber) + highlightColor + '-'
+
+
+        if(len(sortedOpenNotes) > 0):
+            # separate dir for each first open note
+            firstOpenNote = str(next(iter(sortedOpenNotes)))
+            compPath = Path( '%s/%s/%s.png'% (self.tempDirFrames.resolve(),firstOpenNote, compHash) )
+        else:
+            compPath = Path( '%s/%s.png'% (self.tempDirFrames.resolve(), compHash) )
+
         if compPath.is_file():
-            print ('found comp %s' % compHash)
+            #print ('found comp %s' % compHash)
             return compPath
 
         
 
         pathStrings = []
         for noteNumber in range(self.piano.keyFrom, self.piano.keyTo+1):
-            #print (noteNumber)
             offsetX = self.piano.getLeftOffsetForKeyPlacement(noteNumber)
-            isHighlight = False
+            highlightColor = ""
             if noteNumber in sortedOpenNotes:
-                isHighlight = True
-            pathStrings.append( self.piano.getSvgPathForNoteNumber(noteNumber, offsetX, isHighlight) )
-
+                highlightColor = sortedOpenNotes[noteNumber]
+            pathStrings.append( self.piano.getSvgPathForNoteNumber(noteNumber, offsetX, highlightColor) )
 
         compPathSvg = Path( '%s/%s.svg'% (self.tempDirFrames.resolve(), compHash) )
         compPathSvg.write_text(
             '<svg xmlns="http://www.w3.org/2000/svg">%s</svg>' % '\n'.join(pathStrings)
         )
-        # convert it to png
-        os.system("convert %s %s" % (compPathSvg.resolve(), compPath.resolve()) )
+        # convert svg to png as imagemagick's concat can't handle svg
+        cmd = [
+            'convert',
+            str(compPathSvg.resolve()),
+            '-resize',
+            ('%dx%d!' % (self.videoWidth, self.videoHeight) ),
+            str(compPath.resolve())
+        ]
+        self.generalCmd(cmd, 'svg to png conversion', False, True)
+
         os.remove(compPathSvg.resolve())
-        print( "creating new comp for %s" % compHash )
+        #print( "creating new comp for %s" % compHash )
         return compPath
+
+    def getColorForFadeIn(self, noteNumber):
+        localFrameNum = self.noteFadeIns[str(noteNumber)]
+        self.noteFadeIns[str(noteNumber)] += 1
+        if localFrameNum < 4:
+            return self.piano.darkenColor(self.piano.colorHighlight, 0.2)
+        if localFrameNum < 6:
+            return self.piano.darkenColor(self.piano.colorHighlight, 0.1)
+
+        self.noteFadeIns.pop(str(noteNumber))
+        return self.piano.colorHighlight
+
+    def getColorForFadeOut(self, noteNumber):
+        localFrameNum = self.noteFadeOuts[str(noteNumber)]
+
+        self.noteFadeOuts[str(noteNumber)] += 1
+        # TODO based on chosen keycolor a "fade out" may be darken or lighten
+        # we assume we have white and black keys and no inverted colors...
+        multiplicator = 1 if self.piano.isWhiteKey(noteNumber) else -1
+        if localFrameNum < 2:
+            return self.piano.lightenColor(self.piano.colorHighlight, 0.4*multiplicator)
+        if localFrameNum < 4:
+            return self.piano.lightenColor(self.piano.colorHighlight, 0.5*multiplicator)
+        if localFrameNum < 8:
+            return self.piano.lightenColor(self.piano.colorHighlight, 0.6*multiplicator)
+        if localFrameNum < 10:
+            return self.piano.lightenColor(self.piano.colorHighlight, 0.8*multiplicator)
+
+        self.noteFadeOuts.pop(str(noteNumber))
+        return ""
+
+    def generalCmd(self, cmdArgsList, description, readStdError = False, silent=False):
+        if not silent:
+            logging.info("starting %s\r" % description)
+        logging.debug(' '.join(cmdArgsList))
+        sys.stdout.flush()
+        startTime = time.time()
+        if readStdError:
+            process = subprocess.Popen(cmdArgsList, stderr=subprocess.PIPE)
+            processStdOut = process.stderr.read()
+        else:
+            process = subprocess.Popen(cmdArgsList, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            processStdOut = process.stdout.read()
+        retcode = process.wait()
+        if retcode != 0:
+            print ( "ERROR: %s did not complete successfully (error code is %s)" % (description, retcode) )
+            print (processStdOut.decode('utf-8'))
+
+        if not silent:
+            logging.info("finished %s in %s seconds\r" % ( description, '{0:.3g}'.format(time.time() - startTime) ) )
+            sys.stdout.flush()
+        return processStdOut.decode('utf-8')
 
 def main():
     global m2v, config
-    logging.basicConfig(level=logging.WARNING)
+    logging.basicConfig(level=logging.INFO)
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -453,8 +577,6 @@ def main():
     print ( 'EXIT in __main__' )
     sys.exit()
 
-
-
 def validateConfig():
     if not m2v.midiFile.is_file():
         msg = "input midifile \'%s\' does not exist" % m2v.midiFile.resolve()
@@ -488,9 +610,12 @@ def validateConfig():
         print( " quirks in piano key range (keyFrom/keyTo). check config...")
         sys.exit()
 
-    m2v.piano.calculateKeyWidth(m2v.videoWidth, m2v.videoHeight)
-    m2v.piano.calculateSvgScales()
+    m2v.piano.calculateSvgScales(m2v.videoWidth, m2v.videoHeight)
 
+    # TODO: check if ffmpeg is available
+    # TODO: force video dimensions beeing dividable by 2
+    # TODO: check if "fluidsynth" bin is available when addAudio=1
+    # TODO: check if soundfont-path is valid when addAudio=1
 
     return True
 
