@@ -130,13 +130,71 @@ class VirtualPiano(object):
         r, g, b = hls_to_rgb(h, l, s)
         return self.rgb2hex((int(r * 255), int(g * 255), int(b * 255)))
 
+    '''  ___
+        |   |
+        |   |
+        |   |
+        |___|
+    '''
+    def getSquareShapedPath(self, width, height):
+        return "0 v %d h %d V 0 h -%d" % (height, width, width)
+
+    '''  _
+        | |
+        | |_
+        |   |
+        |___|
+    '''
+    def getCShapedPath(self, xLeft, xRight):
+        # TODO: move vars to config
+        whiteW = 100
+        whiteH = 200
+        blackH = 120
+        blackDiff = whiteH - blackH
+        return "200 h 100 v -%s h -%s V 0 h -%s" % (blackDiff, xRight, xLeft)
+
+    '''    _
+          | |
+         _| |_
+        |     |
+        |_____|
+    '''
+    def getDShapedPath(self, xLeft, xMiddle, xRight):
+        # TODO: move vars to config
+        whiteW = 100
+        whiteH = 200
+        blackH = 120
+        blackDiff = whiteH - blackH
+        return "200 h 100 v -%s h -%s V 0 h -%s v %s h -%s" % (blackDiff, xRight, xMiddle, blackH, xLeft)
+
+
+    '''    _
+          | |
+         _| |
+        |   |
+        |___|
+    '''
+    def getEShapedPath(self, xLeft, xRight):
+        # TODO: move vars to config
+        whiteW = 100
+        whiteH = 200
+        blackH = 120
+        blackDiff = whiteH - blackH
+        return "200 h 100 V 0 h -%s v %s h -%s" % (xRight, blackH, xLeft)
+
+    '''
+        This keyboard has following properties (x=octave width).
+        1. All white keys have equal width in front (W=x/7).
+        2. All black keys have equal width (B=x/12).
+        3. The narrow part of white keys C, D and E is W - B*2/3
+        4. The narrow part of white keys F, G, A, and B is W - B*3/4
+    '''
     def getPathChunkForNoteName(self, noteName, noteNumber):
 
         if str(noteNumber) in self.keySvgPaths:
-            #print( "found %s: %s" % (str(noteNumber), self.keySvgPaths[str(noteNumber)]) )
-            #sys.exit()
             return self.keySvgPaths[str(noteNumber)]
 
+        # TODO: move vars to config
         whiteW = 100
         whiteH = 200
         blackH = 120
@@ -154,42 +212,43 @@ class VirtualPiano(object):
             'B': [ 43.75,         56.25]
         }
 
-        if noteName in ["C#", "D#", "F#", "G#", "A#"]:
-            pathChunk = "%d h 58.3333333333 V 0 h -58.3333333333" % (blackH)
+        if not self.isWhiteKey(noteNumber):
+            pathChunk = self.getSquareShapedPath(58.3333333333, blackH)
+            #pathChunk = "%d h 58.3333333333 V 0 h -58.3333333333" % (blackH)
         if noteName == "C":
-            pathChunk = "200 h 100 v -%s h -%s V 0 h -%s" % (blackDiff, dimX['C'][1], dimX['C'][0])
+            pathChunk = self.getCShapedPath(dimX['C'][0], dimX['C'][1])
             if noteNumber == self.keyTo:
-                pathChunk = "200 h 100 V 0 h -100"
+                pathChunk = self.getSquareShapedPath(100, 200)
         if noteName == "D":
-            pathChunk = "200 h 100 v -%s h -%s V 0 h -%s v %s h -%s" % (blackDiff, dimX['D'][2], dimX['D'][1], blackH, dimX['D'][0])
+            pathChunk = self.getDShapedPath(dimX['D'][0], dimX['D'][1], dimX['D'][2])
             if noteNumber == self.keyFrom:
-                pathChunk = "200 h 100 v -%s h -%s V 0 h -%s" % (blackDiff, dimX['D'][2], dimX['D'][1] + dimX['D'][0])
+                pathChunk = self.getCShapedPath(dimX['D'][0] + dimX['D'][1], dimX['D'][2])
             if noteNumber == self.keyTo:
-                pathChunk = "200 h 100 V 0 h -%s v %s h -%s" % (dimX['D'][2] + dimX['D'][1], blackH, dimX['D'][0])
+                pathChunk = self.getEShapedPath(dimX['D'][0], dimX['D'][1] + dimX['D'][2])
         if noteName == "E":
-            pathChunk = "200 h 100 V 0 h -%s v %s h -%s" % (dimX['E'][1], blackH, dimX['E'][0])
+            pathChunk = self.getEShapedPath(dimX['E'][0], dimX['E'][1])
             if noteNumber == self.keyFrom:
-                pathChunk = "200 h 100 V 0 h -100"
+                pathChunk = self.getSquareShapedPath(100, 200)
         if noteName == "F":
-            pathChunk = "200 h 100 v -%s h -%s V 0 h -%s" % (blackDiff, dimX['F'][1], dimX['F'][0])
+            pathChunk = self.getCShapedPath(dimX['F'][0], dimX['F'][1])
             if noteNumber == self.keyTo:
-                pathChunk = "200 h 100 V 0 h -100"
+                pathChunk = self.getSquareShapedPath(100, 200)
         if noteName == "G":
-            pathChunk = "200 h 100 v -%s h -%s V 0 h -%s V %s h -%s" % (blackDiff, dimX['G'][2], dimX['G'][1], blackH, dimX['G'][0])
+            pathChunk = self.getDShapedPath(dimX['G'][0], dimX['G'][1], dimX['G'][2])
             if noteNumber == self.keyFrom:
-                pathChunk = "200 h 100 v -%s h -%s V 0 h -%s" % (blackDiff, dimX['G'][2], dimX['G'][1] + dimX['G'][0])
+                pathChunk = self.getCShapedPath(dimX['G'][0] + dimX['G'][1], dimX['G'][2])
             if noteNumber == self.keyTo:
-                pathChunk = "200 h 100 V 0 h -%s v %s h -%s" % (dimX['G'][2] + dimX['G'][1], blackH, dimX['G'][0])
+                pathChunk = self.getEShapedPath(dimX['G'][0], dimX['G'][1] + dimX['G'][2])
         if noteName == "A":
-            pathChunk = "200 h 100 v -%s h -%s V 0 h -%s V %s h -%s" % (blackDiff, dimX['A'][2], dimX['A'][1], blackH, dimX['A'][0])
+            pathChunk = self.getDShapedPath(dimX['A'][0], dimX['A'][1], dimX['A'][2])
             if noteNumber == self.keyFrom:
-                pathChunk = "200 h 100 v -%s h -%s V 0 h -%s" % (blackDiff, dimX['A'][2], dimX['A'][1] + dimX['A'][0])
+                pathChunk = self.getCShapedPath(dimX['A'][0] + dimX['A'][1], dimX['A'][2])
             if noteNumber == self.keyTo:
-                pathChunk = "200 h 100 V 0 h -%s v %s h -%s" % (dimX['A'][2] + dimX['A'][1], blackH, dimX['A'][0])
+                pathChunk = self.getEShapedPath(dimX['A'][0], dimX['A'][1] + dimX['A'][2])
         if noteName == "B":
-            pathChunk = "200 h 100 V 0 h -%s v %s h -%s" % (dimX['B'][1], blackH, dimX['B'][0])
+            pathChunk = self.getEShapedPath(dimX['B'][0], dimX['B'][1])
             if noteNumber == self.keyFrom:
-                pathChunk = "200 h 100 V 0 h -100"
+                pathChunk = self.getSquareShapedPath(100, 200)
 
         self.keySvgPaths[str(noteNumber)] = pathChunk
         return pathChunk
