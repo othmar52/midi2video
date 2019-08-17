@@ -27,6 +27,20 @@ from pathlib import Path
 from shutil import rmtree
 from colorsys import rgb_to_hls, hls_to_rgb
 
+# https://stackoverflow.com/questions/2352181/how-to-use-a-dot-to-access-members-of-dictionary
+class Map(dict):
+    """dot.notation access to dictionary attributes"""
+    def __getattr__(self, attr):
+        return self.get(attr)
+    __setattr__= dict.__setitem__
+    __delattr__= dict.__delitem__
+
+    def __getstate__(self):
+        return self
+
+    def __setstate__(self, state):
+        self.update(state)
+        self.__dict__ = self
 
 class VirtualPiano(object):
     def __init__(self, config):
@@ -42,32 +56,74 @@ class VirtualPiano(object):
         self.pianoWidth = 0
         self.pianoHeight = 0
 
-        self.svgScaleX = 1
-        self.svgScaleY = 1
-
         self.tempDir = None
         self.tempDirFrames = None
 
         self.keySvgPaths = {}
 
+        self.svg = Map({
+            'A': Map({ 'L':0, 'M':0, 'R':0 }), 'B': Map({ 'L':0, 'M':0, 'R':0 }), 'C': Map({ 'L':0, 'M':0, 'R':0 }),
+            'D': Map({ 'L':0, 'M':0, 'R':0 }), 'E': Map({ 'L':0, 'M':0, 'R':0 }), 'F': Map({ 'L':0, 'M':0, 'R':0 }),
+            'G': Map({ 'L':0, 'M':0, 'R':0 }),
+            'A#': [], 'C#': [], 'D#': [], 'F#': [], 'G#': [],
+            'white': Map({ 'w' : 0, 'h' : 0 }),
+            'black': Map({ 'w' : 0, 'h' : 0, 'diff': 0 }),
+            'scale': Map({ 'x' : 1, 'y' : 1 })
+        })
 
-    def calculateSvgScales(self, videoWidth, videoHeight):
+    '''
+        This keyboard has following properties (x=octave width).
+        1. All white keys have equal width in front (W=x/7).
+        2. All black keys have equal width (B=x/12).
+        3. The narrow part of white keys C, D and E is W - B*2/3
+        4. The narrow part of white keys F, G, A, and B is W - B*3/4
+    '''
+    def calculateSvgDimensions(self,videoWidth, videoHeight, whiteW=100, whiteH=200, blackH=120):
         self.pianoWidth = videoWidth
         self.pianoHeight = videoHeight
         self.amountWhiteKeys = self.countWhiteKeys(self.keyFrom, self.keyTo)
 
-        # white keys in our path definitions has fixed dimensions of x:100 y:200
-        realSvgWidth = self.amountWhiteKeys * 100
-        realSvgHeight = 200
-        self.svgScaleX = self.pianoWidth / realSvgWidth
-        self.svgScaleY = self.pianoHeight / realSvgHeight
+        self.svg.white.w = whiteW
+        self.svg.white.h = whiteH
+        self.svg.black.h = blackH
+        self.svg.black.diff = whiteH - blackH
+
+        octaveW = whiteW * 7
+        self.svg.black.w = octaveW / 12
+
+        narrowPartCDE = self.svg.white.w - self.svg.black.w*2/3
+        narrowPartFGAB = self.svg.white.w - self.svg.black.w*3/4
+
+        self.svg.C.L = narrowPartCDE
+        self.svg.C.R = self.svg.white.w - narrowPartCDE
+        self.svg.D.L = self.svg.black.w - self.svg.C.R
+        self.svg.D.M = narrowPartCDE
+        self.svg.D.R = self.svg.white.w - self.svg.D.L - self.svg.D.M
+        self.svg.E.R = narrowPartCDE
+        self.svg.E.L = self.svg.white.w - narrowPartCDE
+        self.svg.F.L = narrowPartFGAB
+        self.svg.F.R = self.svg.white.w - narrowPartFGAB
+        self.svg.G.L = self.svg.black.w - self.svg.F.R
+        self.svg.G.M = narrowPartFGAB
+        self.svg.G.R = self.svg.white.w - self.svg.G.L - self.svg.G.M
+        self.svg.A.L = self.svg.black.w - self.svg.G.R
+        self.svg.A.M = narrowPartFGAB
+        self.svg.A.R = self.svg.white.w - self.svg.A.L - self.svg.A.M
+        self.svg.B.R = narrowPartFGAB
+        self.svg.B.L = self.svg.white.w - narrowPartFGAB
+
+
+        realSvgWidth = self.amountWhiteKeys * self.svg.white.w
+        realSvgHeight = self.svg.white.h
+
+        self.svg.scale.x = self.pianoWidth / realSvgWidth
+        self.svg.scale.y = self.pianoHeight / realSvgHeight
+
 
 
     # thanks to https://stackoverflow.com/questions/712679/convert-midi-note-numbers-to-name-and-octave#answer-54546263
     def noteNumberToNoteName(self, noteNumber, appendOctave=False):
-        noteNumber -= 21
-        # hmmmm do we really need this correction?
-        noteNumber += 12
+        noteNumber -= 9
         notes = [ "A", "A#", "B", "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#" ]
         octave = math.floor(noteNumber / 12) + 1
         noteName = notes[ noteNumber % 12 ]
@@ -90,23 +146,23 @@ class VirtualPiano(object):
 
     def getLeftOffsetForKeyPlacement(self, noteNumber):
         numWhiteKeys = self.countWhiteKeys(self.keyFrom, noteNumber)
-        sumWhiteKeysWidth = (numWhiteKeys-1) * 100
+        sumWhiteKeysWidth = (numWhiteKeys-1) * self.svg.white.w
         if self.isWhiteKey(noteNumber):
             return sumWhiteKeysWidth 
 
         noteName = self.noteNumberToNoteName(noteNumber)
         #print ( "%s %s " % (noteName,  sumWhiteKeysWidth) )
-
+        svg = self.svg
         if noteName == 'A#':
-            return sumWhiteKeysWidth + 29.1666666666 + 56.25
+            return sumWhiteKeysWidth + svg.A.L + svg.A.M
         if noteName == 'C#':
-            return sumWhiteKeysWidth + 61.1111111111
+            return sumWhiteKeysWidth + svg.C.L
         if noteName == 'D#':
-            return sumWhiteKeysWidth + 19.4444444444 + 61.1111111111
+            return sumWhiteKeysWidth + svg.D.L + svg.D.M
         if noteName == 'F#':
-            return sumWhiteKeysWidth + 56.25
+            return sumWhiteKeysWidth + svg.F.L
         if noteName == 'G#':
-            return sumWhiteKeysWidth + 14.5833333333 + 56.25
+            return sumWhiteKeysWidth + svg.G.L + svg.G.M
 
     def hex2rgb(self, hexString):
         return tuple(int(hexString.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
@@ -133,7 +189,7 @@ class VirtualPiano(object):
     '''  ___
         |   |
         |   |
-        |   |
+        |   |  this shape applies to all black keys, C(last), E(first), F(last), B(first)
         |___|
     '''
     def getSquareShapedPath(self, width, height):
@@ -142,113 +198,73 @@ class VirtualPiano(object):
     '''  _
         | |
         | |_
-        |   |
+        |   |  this shape applies to C, F, D(first), G(first), A(first)
         |___|
     '''
     def getCShapedPath(self, xLeft, xRight):
-        # TODO: move vars to config
-        whiteW = 100
-        whiteH = 200
-        blackH = 120
-        blackDiff = whiteH - blackH
-        return "200 h 100 v -%s h -%s V 0 h -%s" % (blackDiff, xRight, xLeft)
+        return "%s h %s v -%s h -%s V 0 h -%s" % (
+            self.svg.white.h,
+            self.svg.white.w,
+            self.svg.black.diff,
+            xRight,
+            xLeft
+        )
 
     '''    _
           | |
          _| |_
-        |     |
+        |     |  this shape applies to D, G, A
         |_____|
     '''
     def getDShapedPath(self, xLeft, xMiddle, xRight):
-        # TODO: move vars to config
-        whiteW = 100
-        whiteH = 200
-        blackH = 120
-        blackDiff = whiteH - blackH
-        return "200 h 100 v -%s h -%s V 0 h -%s v %s h -%s" % (blackDiff, xRight, xMiddle, blackH, xLeft)
+        return "%s h %s v -%s h -%s V 0 h -%s v %s h -%s" % (
+            self.svg.white.h,
+            self.svg.white.w,
+            self.svg.black.diff,
+            xRight,
+            xMiddle,
+            self.svg.black.h,
+            xLeft
+        )
 
 
     '''    _
           | |
          _| |
-        |   |
+        |   | this shape applies to E, B, D(last), G(last), A(last)
         |___|
     '''
     def getEShapedPath(self, xLeft, xRight):
-        # TODO: move vars to config
-        whiteW = 100
-        whiteH = 200
-        blackH = 120
-        blackDiff = whiteH - blackH
-        return "200 h 100 V 0 h -%s v %s h -%s" % (xRight, blackH, xLeft)
+        return "%s h %s V 0 h -%s v %s h -%s" % (
+            self.svg.white.h,
+            self.svg.white.w,
+            xRight,
+            self.svg.black.h,
+            xLeft
+        )
 
-    '''
-        This keyboard has following properties (x=octave width).
-        1. All white keys have equal width in front (W=x/7).
-        2. All black keys have equal width (B=x/12).
-        3. The narrow part of white keys C, D and E is W - B*2/3
-        4. The narrow part of white keys F, G, A, and B is W - B*3/4
-    '''
     def getPathChunkForNoteName(self, noteName, noteNumber):
 
         if str(noteNumber) in self.keySvgPaths:
             return self.keySvgPaths[str(noteNumber)]
 
-        # TODO: move vars to config
-        whiteW = 100
-        whiteH = 200
-        blackH = 120
-        blackDiff = whiteH - blackH
-
-        # dimensions X for narrow parts of white keys with sum 100
-        dimX = {
-            'C': [ 61.1111111111, 38.8888888889 ],
-            'D': [ 19.4444444444, 61.1111111111, 19.4444444445 ],
-            'E': [ 38.8888888889, 61.1111111111 ],
-
-            'F': [ 56.25,         43.75 ],
-            'G': [ 14.5833333333, 56.25, 29.1666666667 ],
-            'A': [ 29.1666666666, 56.25, 14.5833333333 ],
-            'B': [ 43.75,         56.25]
-        }
-
+        svg = self.svg
         if not self.isWhiteKey(noteNumber):
-            pathChunk = self.getSquareShapedPath(58.3333333333, blackH)
-            #pathChunk = "%d h 58.3333333333 V 0 h -58.3333333333" % (blackH)
-        if noteName == "C":
-            pathChunk = self.getCShapedPath(dimX['C'][0], dimX['C'][1])
+            pathChunk = self.getSquareShapedPath(svg.black.w, svg.black.h)
+        if noteName in ["C", "F"]:
+            pathChunk = self.getCShapedPath(svg[noteName].L, svg[noteName].R)
             if noteNumber == self.keyTo:
-                pathChunk = self.getSquareShapedPath(100, 200)
-        if noteName == "D":
-            pathChunk = self.getDShapedPath(dimX['D'][0], dimX['D'][1], dimX['D'][2])
+                pathChunk = self.getSquareShapedPath(svg.white.w, svg.white.h)
+        if noteName in ["D", "G", "A"]:
+            pathChunk = self.getDShapedPath(svg[noteName].L, svg[noteName].M, svg[noteName].R)
             if noteNumber == self.keyFrom:
-                pathChunk = self.getCShapedPath(dimX['D'][0] + dimX['D'][1], dimX['D'][2])
+                pathChunk = self.getCShapedPath(svg[noteName].L + svg[noteName].M, svg[noteName].R)
             if noteNumber == self.keyTo:
-                pathChunk = self.getEShapedPath(dimX['D'][0], dimX['D'][1] + dimX['D'][2])
-        if noteName == "E":
-            pathChunk = self.getEShapedPath(dimX['E'][0], dimX['E'][1])
+                pathChunk = self.getEShapedPath(svg[noteName].L, svg[noteName].M + svg[noteName].R)
+        if noteName in ["E", "B"]:
+            pathChunk = self.getEShapedPath(svg[noteName].L, svg[noteName].R)
             if noteNumber == self.keyFrom:
-                pathChunk = self.getSquareShapedPath(100, 200)
-        if noteName == "F":
-            pathChunk = self.getCShapedPath(dimX['F'][0], dimX['F'][1])
-            if noteNumber == self.keyTo:
-                pathChunk = self.getSquareShapedPath(100, 200)
-        if noteName == "G":
-            pathChunk = self.getDShapedPath(dimX['G'][0], dimX['G'][1], dimX['G'][2])
-            if noteNumber == self.keyFrom:
-                pathChunk = self.getCShapedPath(dimX['G'][0] + dimX['G'][1], dimX['G'][2])
-            if noteNumber == self.keyTo:
-                pathChunk = self.getEShapedPath(dimX['G'][0], dimX['G'][1] + dimX['G'][2])
-        if noteName == "A":
-            pathChunk = self.getDShapedPath(dimX['A'][0], dimX['A'][1], dimX['A'][2])
-            if noteNumber == self.keyFrom:
-                pathChunk = self.getCShapedPath(dimX['A'][0] + dimX['A'][1], dimX['A'][2])
-            if noteNumber == self.keyTo:
-                pathChunk = self.getEShapedPath(dimX['A'][0], dimX['A'][1] + dimX['A'][2])
-        if noteName == "B":
-            pathChunk = self.getEShapedPath(dimX['B'][0], dimX['B'][1])
-            if noteNumber == self.keyFrom:
-                pathChunk = self.getSquareShapedPath(100, 200)
+                pathChunk = self.getSquareShapedPath(svg.white.w, svg.white.h)
 
         self.keySvgPaths[str(noteNumber)] = pathChunk
         return pathChunk
@@ -273,8 +289,8 @@ class VirtualPiano(object):
             outlineColor,
             offsetX,
             self.getPathChunkForNoteName(noteLetter, noteNumber),
-            self.svgScaleX,
-            self.svgScaleY
+            self.svg.scale.x,
+            self.svg.scale.y
         )
 
         return pathString
@@ -307,11 +323,9 @@ class Midi2Video(object):
         self.tempDirFrames = None
 
     # we need to add an absolute microtimestamp to each note event
-    # TODO: add configurtion like channelWhitelist and/or channelBlacklist
+    # TODO: add configuration like channelWhitelist and/or channelBlacklist
     def prepareNoteEvents(self):
         pattern = midi.FileIO.read_midifile(self.midiFile.resolve())
-        #print( pattern)
-        #sys.exit()
         tempo = 50000        # default: 120 BPM
         ticksPerBeat = pattern.resolution
         lastEventTick = 0
@@ -476,7 +490,7 @@ class Midi2Video(object):
         sortedOpenNotes = {k: self.openNotes[k] for k in sorted(self.openNotes)}
         compHash = "f"
 
-
+        # TODO make fadeIn/fadeOut optional via config
         for noteNumber in range(self.piano.keyFrom, self.piano.keyTo+1):
             #print (noteNumber)
             offsetX = self.piano.getLeftOffsetForKeyPlacement(noteNumber)
@@ -539,7 +553,7 @@ class Midi2Video(object):
         self.noteFadeIns[str(noteNumber)] += 1
         if localFrameNum < 4:
             return self.piano.darkenColor(self.piano.colorHighlight, 0.2)
-        if localFrameNum < 6:
+        if localFrameNum < 5:
             return self.piano.darkenColor(self.piano.colorHighlight, 0.1)
 
         self.noteFadeIns.pop(str(noteNumber))
@@ -669,7 +683,7 @@ def validateConfig():
         print( " quirks in piano key range (keyFrom/keyTo). check config...")
         sys.exit()
 
-    m2v.piano.calculateSvgScales(m2v.videoWidth, m2v.videoHeight)
+    m2v.piano.calculateSvgDimensions(m2v.videoWidth, m2v.videoHeight)
 
     # TODO: check if ffmpeg is available
     # TODO: force video dimensions beeing dividable by 2

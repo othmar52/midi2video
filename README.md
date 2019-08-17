@@ -22,7 +22,7 @@ height = 100
 
 frameRate = 25
 
-; add audio reqires fluidsynth and a soundfont-file (e.g. soundfont-fluid)
+; add audio requires fluidsynth and a soundfont-file (e.g. soundfont-fluid)
 addAudio = 0
 soundFont = /usr/share/soundfonts/FluidR3_GM.sf2
 
