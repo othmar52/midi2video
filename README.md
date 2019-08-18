@@ -8,8 +8,8 @@ in case you create videos with piano learning/howto this one might be useful for
 # requirements
 - python3
 - mydy `pip install mydy`
+- cairosvg `pip install cairosvg`
 - ffmpeg
-- imagemagick
 - fluidsynth + soundfont-fluid *(**optional** when audio should be generated as well)*
 
 # configuration options
@@ -44,7 +44,6 @@ outlineColorHighlight = #6e160f
 ; TODO specify bin paths to make this script windows compatible
 ;[general]
 ;bin.ffmpeg = ffmpeg
-;bin.convert = convert
 ;bin.fluidsynth = fluidsynth
 ;logLevel = info
 ```

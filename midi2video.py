@@ -1,17 +1,8 @@
 #!/bin/env python3
 # -*- coding: utf-8 -*- 
 
-# requirements
-# pip install mydy
-# ffmpeg
-# convert (imagemagick)
-# fluidsynth (optional when audio should be generated as well)
-
-
 # limitiations
 # tempo changes are not supported
-
-
 
 # @see https://github.com/vishnubob/python-midi/pull/62/commits/9aa092e653684c871b9ee2293ee8e640bb1cab34
 import argparse
@@ -27,6 +18,7 @@ from pathlib import Path
 from shutil import rmtree
 from shlex import quote
 from colorsys import rgb_to_hls, hls_to_rgb
+from cairosvg import svg2png
 
 # https://stackoverflow.com/questions/2352181/how-to-use-a-dot-to-access-members-of-dictionary
 class Map(dict):
@@ -251,21 +243,25 @@ class VirtualPiano(object):
         svg = self.svg
         if not self.isWhiteKey(noteNumber):
             pathChunk = self.getSquareShapedPath(svg.black.w, svg.black.h)
+
         if noteName in ["C", "F"]:
             pathChunk = self.getCShapedPath(svg[noteName].L, svg[noteName].R)
             if noteNumber == self.keyTo:
                 pathChunk = self.getSquareShapedPath(svg.white.w, svg.white.h)
+
         if noteName in ["D", "G", "A"]:
             pathChunk = self.getDShapedPath(svg[noteName].L, svg[noteName].M, svg[noteName].R)
             if noteNumber == self.keyFrom:
                 pathChunk = self.getCShapedPath(svg[noteName].L + svg[noteName].M, svg[noteName].R)
             if noteNumber == self.keyTo:
                 pathChunk = self.getEShapedPath(svg[noteName].L, svg[noteName].M + svg[noteName].R)
+
         if noteName in ["E", "B"]:
             pathChunk = self.getEShapedPath(svg[noteName].L, svg[noteName].R)
             if noteNumber == self.keyFrom:
                 pathChunk = self.getSquareShapedPath(svg.white.w, svg.white.h)
 
+        # path does never change. so add it to cache dict
         self.keySvgPaths[str(noteNumber)] = pathChunk
         return pathChunk
 
@@ -394,6 +390,8 @@ class Midi2Video(object):
 
     def createVideo(self):
 
+
+        startTime = time.time()
         frameDurationMs = 1000000/self.framesPerSecond
         currentFrameStartMs = 0
 
@@ -414,6 +412,8 @@ class Midi2Video(object):
         frameFilePathsFile.write_text(
             '\n'.join(frameFilePaths)
         )
+
+        logging.info("finished %s in %s seconds\r" % ( 'create single frames', '{0:.3g}'.format(time.time() - startTime) ) )
 
         videoWithoutAudioFile = Path("%s/video-noaudio.mp4" % self.tempDir.resolve())
 
@@ -525,23 +525,14 @@ class Midi2Video(object):
                 highlightColor = sortedOpenNotes[noteNumber]
             pathStrings.append( self.piano.getSvgPathForNoteNumber(noteNumber, offsetX, highlightColor) )
 
-        compPathSvg = Path( '%s/%s.svg'% (self.tempDirFrames.resolve(), compHash) )
-        compPathSvg.write_text(
-            '<svg xmlns="http://www.w3.org/2000/svg">%s</svg>' % '\n'.join(pathStrings)
+        svgString = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d">%s</svg>' % (
+            self.videoWidth,
+            self.videoHeight,
+            '\n'.join(pathStrings)
         )
-        # convert svg to png as imagemagick's concat can't handle svg
-        cmd = [
-            'convert',
-            self.escapeArg(compPathSvg),
-            '-resize',
-            ('%dx%d!' % (self.videoWidth, self.videoHeight) ),
-            self.escapeArg(compPath)
-        ]
-        self.generalCmd(cmd, 'svg to png conversion', False, True)
-
-        os.remove(compPathSvg.resolve())
-        #print( "creating new comp for %s" % compHash )
+        svg2png( bytestring=svgString, write_to=self.escapeArg(compPath) )
         return compPath
+
 
     def getColorForFadeIn(self, noteNumber):
         localFrameNum = self.noteFadeIns[str(noteNumber)]
@@ -575,7 +566,7 @@ class Midi2Video(object):
 
     def generalCmd(self, cmdArgsList, description, readStdError = False, silent=False):
         if not silent:
-            logging.info("starting %s\r" % description)
+            logging.info("starting %s" % description)
         logging.debug(' '.join(cmdArgsList))
         sys.stdout.flush()
         startTime = time.time()
