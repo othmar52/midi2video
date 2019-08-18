@@ -25,6 +25,7 @@ import os
 import time
 from pathlib import Path
 from shutil import rmtree
+from shlex import quote
 from colorsys import rgb_to_hls, hls_to_rgb
 
 # https://stackoverflow.com/questions/2352181/how-to-use-a-dot-to-access-members-of-dictionary
@@ -227,7 +228,6 @@ class VirtualPiano(object):
             xLeft
         )
 
-
     '''    _
           | |
          _| |
@@ -355,7 +355,7 @@ class Midi2Video(object):
                 if eventMicroSecond > self.videoDurationMs:
                     self.videoDurationMs = eventMicroSecond
 
-                # skip note events that are outside our keyboard range
+                # skip note events that are outside our visible keyboard range
                 if not self.piano.keyFrom == "auto" and event.data[0] < int(self.piano.keyFrom):
                     continue
 
@@ -419,10 +419,10 @@ class Midi2Video(object):
 
         cmd = [
             'ffmpeg', '-y', '-f', 'concat', '-r', str(self.framesPerSecond),
-            '-safe', '0', '-i', str(frameFilePathsFile.resolve()),
+            '-safe', '0', '-i', self.escapeArg(frameFilePathsFile),
             '-pix_fmt', 'yuv420p',
             '-framerate', str(self.framesPerSecond),
-            str(videoWithoutAudioFile.resolve())
+            self.escapeArg(videoWithoutAudioFile)
         ]
         self.generalCmd(cmd, 'concat single frame pics to video')
 
@@ -438,16 +438,16 @@ class Midi2Video(object):
             self.generalCmd(cmd, 'convert midi file to audio.wav')
 
             cmd = [
-                'ffmpeg','-y','-i', str(audioWav.resolve()),
+                'ffmpeg','-y','-i', self.escapeArg(audioWav),
                 '-vn', '-ar', '44100', '-ac', '2', '-b:a', '192k',
-                str(audioMp3.resolve())
+                self.escapeArg(audioMp3)
             ]
             self.generalCmd(cmd, 'convert wav to mp3')
 
             cmd = [
-                'ffmpeg', '-y', '-i', str(videoWithoutAudioFile.resolve()),
-                '-i', str(audioMp3.resolve()), '-c', 'copy', '-map', '0:v:0', '-map', '1:a:0', '-shortest',
-                str(videoPath.resolve())
+                'ffmpeg', '-y', '-i', self.escapeArg(videoWithoutAudioFile),
+                '-i', self.escapeArg(audioMp3), '-c', 'copy', '-map', '0:v:0', '-map', '1:a:0', '-shortest',
+                self.escapeArg(videoPath)
             ]
             self.generalCmd(cmd, 'merge mp3 stream into video')
         else:
@@ -476,8 +476,6 @@ class Midi2Video(object):
             ):
                 self.openNotes.pop(newEvent.data[0], None)
                 self.noteFadeOuts[str(newEvent.data[0])] = 1
-                #print ("updateActiveNotesForFrame::fadeOut")
-                #sys.exit()
                 continue
 
             self.openNotes[newEvent.data[0]] = newEvent.data[0]
@@ -509,18 +507,15 @@ class Midi2Video(object):
                 compHash += str(noteNumber) + highlightColor + '-'
 
 
+        compPath = Path( '%s/%s.png'% (self.tempDirFrames.resolve(), compHash) )
         if(len(sortedOpenNotes) > 0):
-            # separate dir for each first open note
+            # separate directory for each first open note
             firstOpenNote = str(next(iter(sortedOpenNotes)))
             compPath = Path( '%s/%s/%s.png'% (self.tempDirFrames.resolve(),firstOpenNote, compHash) )
-        else:
-            compPath = Path( '%s/%s.png'% (self.tempDirFrames.resolve(), compHash) )
 
+        # don't create already existing identical frame pic again
         if compPath.is_file():
-            #print ('found comp %s' % compHash)
             return compPath
-
-        
 
         pathStrings = []
         for noteNumber in range(self.piano.keyFrom, self.piano.keyTo+1):
@@ -537,10 +532,10 @@ class Midi2Video(object):
         # convert svg to png as imagemagick's concat can't handle svg
         cmd = [
             'convert',
-            str(compPathSvg.resolve()),
+            self.escapeArg(compPathSvg),
             '-resize',
             ('%dx%d!' % (self.videoWidth, self.videoHeight) ),
-            str(compPath.resolve())
+            self.escapeArg(compPath)
         ]
         self.generalCmd(cmd, 'svg to png conversion', False, True)
 
@@ -600,6 +595,12 @@ class Midi2Video(object):
             sys.stdout.flush()
         return processStdOut.decode('utf-8')
 
+    def escapeArg(self, item):
+        if item.__class__.__name__ == 'PosixPath':
+            item = str(item.resolve())
+
+        return item.replace("'", "'\"'\"'")
+
 def main():
     global m2v, config
     logging.basicConfig(level=logging.INFO)
@@ -636,7 +637,7 @@ def main():
     # TODO given arguments have highest priority override conf values again...
 
     if validateConfig() != True:
-        #print ( colored ( "exiting due to config errors...", "red" ) )
+        print ( "exiting due to config errors..." )
         sys.exit()
 
     m2v.createTempDirs()
@@ -647,7 +648,7 @@ def main():
     #print (" removing temp files %s" % str(m2v.tempDir) )
     #rmtree(m2v.tempDir)
 
-    print ( 'EXIT in __main__' )
+    print ( 'finished' )
     sys.exit()
 
 def validateConfig():
