@@ -306,6 +306,8 @@ class Midi2Video(object):
         self.videoHeight = int(config.get('video', 'height', fallback=100))
         self.framesPerSecond = int(config.get('video', 'frameRate', fallback=25))
         self.soundFont = config.get('video', 'soundFont', fallback='')
+        self.noteFadeIn = config.get('video', 'noteFadeIn', fallback='0')
+        self.noteFadeOut = config.get('video', 'noteFadeOut', fallback='0')
 
         self.videoDurationMs = 0
         self.videoTotalFrames = 0
@@ -478,7 +480,6 @@ class Midi2Video(object):
         sortedOpenNotes = {k: self.openNotes[k] for k in sorted(self.openNotes)}
         compHash = "f"
 
-        # TODO make fadeIn/fadeOut optional via config
         for noteNumber in range(self.piano.startNote, self.piano.endNote+1):
             offsetX = self.piano.getLeftOffsetForKeyPlacement(noteNumber)
             isHighlight = False
@@ -523,7 +524,11 @@ class Midi2Video(object):
         return compPath
 
 
+    # TODO: does it make sense to limit fadeIn to NoteOff+NoteOn within very short time?
     def getColorForFadeIn(self, noteNumber):
+        if self.noteFadeIn != '1':
+            return self.piano.colorHighlight
+
         localFrameNum = self.noteFadeIns[str(noteNumber)]
         self.noteFadeIns[str(noteNumber)] += 1
         if localFrameNum < 4:
@@ -534,7 +539,11 @@ class Midi2Video(object):
         self.noteFadeIns.pop(str(noteNumber))
         return self.piano.colorHighlight
 
+    # TODO: does it make sense to limit fadeOut to very short notes?
     def getColorForFadeOut(self, noteNumber):
+        if self.noteFadeOut != '1':
+            return ''
+
         localFrameNum = self.noteFadeOuts[str(noteNumber)]
 
         self.noteFadeOuts[str(noteNumber)] += 1
