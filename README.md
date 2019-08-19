@@ -34,7 +34,6 @@ soundFont = /usr/share/soundfonts/FluidR3_GM.sf2
 
 
 [piano]
-
 ; use any of the noteNumbers [0-127] as startNote/endNote
 ; "auto" will use the lowest/highest note of the midi file as first/last key
 ; black key boundries gets extended to next white key
