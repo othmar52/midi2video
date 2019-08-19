@@ -28,9 +28,9 @@ soundFont = /usr/share/soundfonts/FluidR3_GM.sf2
 
 [piano]
 ; "auto" will use the lowest note of the midi file as first key
-keyFrom = auto
+startNote = auto
 ; "auto" will use the highest note of the midi file as last key
-keyTo = auto
+endNote = auto
 
 
 colorWhiteKeys = #FFFFFF

@@ -16,7 +16,6 @@ import os
 import time
 from pathlib import Path
 from shutil import rmtree
-from shlex import quote
 from colorsys import rgb_to_hls, hls_to_rgb
 from cairosvg import svg2png
 
@@ -37,8 +36,8 @@ class Map(dict):
 
 class VirtualPiano(object):
     def __init__(self, config):
-        self.keyFrom = config.get('piano', 'keyFrom', fallback='auto')
-        self.keyTo = config.get('piano', 'keyTo', fallback='auto')
+        self.startNote = config.get('piano', 'startNote', fallback='auto')
+        self.endNote = config.get('piano', 'endNote', fallback='auto')
         self.colorWhiteKeys = config.get('piano', 'colorWhiteKeys', fallback='#FFFFFF')
         self.colorBlackKeys = config.get('piano', 'colorBlackKeys', fallback='#131313')
         self.colorHighlight = config.get('piano', 'colorHighlight', fallback='#DE4439')
@@ -55,10 +54,14 @@ class VirtualPiano(object):
         self.keySvgPaths = {}
 
         self.svg = Map({
-            'A': Map({ 'L':0, 'M':0, 'R':0 }), 'B': Map({ 'L':0, 'M':0, 'R':0 }), 'C': Map({ 'L':0, 'M':0, 'R':0 }),
-            'D': Map({ 'L':0, 'M':0, 'R':0 }), 'E': Map({ 'L':0, 'M':0, 'R':0 }), 'F': Map({ 'L':0, 'M':0, 'R':0 }),
+            'A': Map({ 'L':0, 'M':0, 'R':0 }),
+            'B': Map({ 'L':0, 'M':0, 'R':0 }),
+            'C': Map({ 'L':0, 'M':0, 'R':0 }),
+            'D': Map({ 'L':0, 'M':0, 'R':0 }),
+            'E': Map({ 'L':0, 'M':0, 'R':0 }),
+            'F': Map({ 'L':0, 'M':0, 'R':0 }),
             'G': Map({ 'L':0, 'M':0, 'R':0 }),
-            'A#': [], 'C#': [], 'D#': [], 'F#': [], 'G#': [],
+            'A#': 0, 'C#': 0, 'D#': 0, 'F#': 0, 'G#': 0,
             'white': Map({ 'w' : 0, 'h' : 0 }),
             'black': Map({ 'w' : 0, 'h' : 0, 'diff': 0 }),
             'scale': Map({ 'x' : 1, 'y' : 1 })
@@ -74,7 +77,7 @@ class VirtualPiano(object):
     def calculateSvgDimensions(self,videoWidth, videoHeight, whiteW=100, whiteH=200, blackH=120):
         self.pianoWidth = videoWidth
         self.pianoHeight = videoHeight
-        self.amountWhiteKeys = self.countWhiteKeys(self.keyFrom, self.keyTo)
+        self.amountWhiteKeys = self.countWhiteKeys(self.startNote, self.endNote)
 
         self.svg.white.w = whiteW
         self.svg.white.h = whiteH
@@ -105,6 +108,12 @@ class VirtualPiano(object):
         self.svg.B.R = narrowPartFGAB
         self.svg.B.L = self.svg.white.w - narrowPartFGAB
 
+        # horizontal offset relative to left white key
+        self.svg['A#'] = self.svg.A.L + self.svg.A.M
+        self.svg['C#'] = self.svg.C.L
+        self.svg['D#'] = self.svg.D.L + self.svg.D.M
+        self.svg['F#'] = self.svg.F.L
+        self.svg['G#'] = self.svg.G.L + self.svg.G.M
 
         realSvgWidth = self.amountWhiteKeys * self.svg.white.w
         realSvgHeight = self.svg.white.h
@@ -115,47 +124,33 @@ class VirtualPiano(object):
 
 
     # thanks to https://stackoverflow.com/questions/712679/convert-midi-note-numbers-to-name-and-octave#answer-54546263
-    def noteNumberToNoteName(self, noteNumber, appendOctave=False):
+    def noteNumberToNoteName(self, noteNumber):
         noteNumber -= 9
         notes = [ "A", "A#", "B", "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#" ]
-        octave = math.floor(noteNumber / 12) + 1
-        noteName = notes[ noteNumber % 12 ]
-        if appendOctave == False:
-            return noteName
-        return "%s%d" % (noteName, octave)
+        #octave = math.floor(noteNumber / 12) + 1
+        return notes[ noteNumber % 12 ]
 
     def isWhiteKey(self, noteNumber):
-        if self.noteNumberToNoteName(noteNumber) in ["A", "B", "C", "D", "E", "F", "G"]:
-            return True
-        return False
+        if self.noteNumberToNoteName(noteNumber) in ["A#", "C#", "D#", "F#", "G#"]:
+            return False
+        return True
 
-    def countWhiteKeys(self, keyFrom, keyTo):
+    def countWhiteKeys(self, startNote, endNote):
         counter = 0
-        for noteName in range(keyFrom, keyTo+1):
+        for noteName in range(startNote, endNote+1):
             if self.isWhiteKey(noteName):
                 counter += 1
 
         return counter
 
     def getLeftOffsetForKeyPlacement(self, noteNumber):
-        numWhiteKeys = self.countWhiteKeys(self.keyFrom, noteNumber)
+        numWhiteKeys = self.countWhiteKeys(self.startNote, noteNumber)
         sumWhiteKeysWidth = (numWhiteKeys-1) * self.svg.white.w
         if self.isWhiteKey(noteNumber):
-            return sumWhiteKeysWidth 
+            return sumWhiteKeysWidth
 
-        noteName = self.noteNumberToNoteName(noteNumber)
-        #print ( "%s %s " % (noteName,  sumWhiteKeysWidth) )
-        svg = self.svg
-        if noteName == 'A#':
-            return sumWhiteKeysWidth + svg.A.L + svg.A.M
-        if noteName == 'C#':
-            return sumWhiteKeysWidth + svg.C.L
-        if noteName == 'D#':
-            return sumWhiteKeysWidth + svg.D.L + svg.D.M
-        if noteName == 'F#':
-            return sumWhiteKeysWidth + svg.F.L
-        if noteName == 'G#':
-            return sumWhiteKeysWidth + svg.G.L + svg.G.M
+        return sumWhiteKeysWidth + self.svg[self.noteNumberToNoteName(noteNumber)]
+
 
     def hex2rgb(self, hexString):
         return tuple(int(hexString.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
@@ -246,19 +241,19 @@ class VirtualPiano(object):
 
         if noteName in ["C", "F"]:
             pathChunk = self.getCShapedPath(svg[noteName].L, svg[noteName].R)
-            if noteNumber == self.keyTo:
+            if noteNumber == self.endNote:
                 pathChunk = self.getSquareShapedPath(svg.white.w, svg.white.h)
 
         if noteName in ["D", "G", "A"]:
             pathChunk = self.getDShapedPath(svg[noteName].L, svg[noteName].M, svg[noteName].R)
-            if noteNumber == self.keyFrom:
+            if noteNumber == self.startNote:
                 pathChunk = self.getCShapedPath(svg[noteName].L + svg[noteName].M, svg[noteName].R)
-            if noteNumber == self.keyTo:
+            if noteNumber == self.endNote:
                 pathChunk = self.getEShapedPath(svg[noteName].L, svg[noteName].M + svg[noteName].R)
 
         if noteName in ["E", "B"]:
             pathChunk = self.getEShapedPath(svg[noteName].L, svg[noteName].R)
-            if noteNumber == self.keyFrom:
+            if noteNumber == self.startNote:
                 pathChunk = self.getSquareShapedPath(svg.white.w, svg.white.h)
 
         # path does never change. so add it to cache dict
@@ -308,7 +303,7 @@ class Midi2Video(object):
         self.highestFoundNoteNumber = 0
         self.notesCollected = False
         self.videoWidth = int(config.get('video', 'width', fallback=800))
-        self.videoHeight = int(config.get('video', 'height', fallback=200))
+        self.videoHeight = int(config.get('video', 'height', fallback=100))
         self.framesPerSecond = int(config.get('video', 'frameRate', fallback=25))
         self.soundFont = config.get('video', 'soundFont', fallback='')
 
@@ -352,10 +347,10 @@ class Midi2Video(object):
                     self.videoDurationMs = eventMicroSecond
 
                 # skip note events that are outside our visible keyboard range
-                if not self.piano.keyFrom == "auto" and event.data[0] < int(self.piano.keyFrom):
+                if not self.piano.startNote == "auto" and event.data[0] < int(self.piano.startNote):
                     continue
 
-                if not self.piano.keyTo == "auto" and event.data[0] > int(self.piano.keyTo):
+                if not self.piano.endNote == "auto" and event.data[0] > int(self.piano.endNote):
                     continue
 
                 if event.data[0] < self.lowestFoundNoteNumber:
@@ -383,23 +378,19 @@ class Midi2Video(object):
         self.piano.tempDirFrames = self.tempDirFrames
 
         # create a dir for every single (start) note to avoid filesystem boundries
-        for noteNumber in range(self.piano.keyFrom, self.piano.keyTo+1):
+        for noteNumber in range(self.piano.startNote, self.piano.endNote+1):
             noteDir = Path('%s/%s' % ( self.tempDirFrames.resolve(), noteNumber) )
             noteDir.mkdir(parents=True, exist_ok=True)
 
 
     def createVideo(self):
-
-
         startTime = time.time()
         frameDurationMs = 1000000/self.framesPerSecond
         currentFrameStartMs = 0
-
         reachedPercent = 0
 
         frameFilePaths = []
         for frameNum in range(1,self.videoTotalFrames+1):
-            #print ('.', end = '')
             reachedPercent = int(frameNum / (self.videoTotalFrames/100))
             print ('create single frames: %i %%' % reachedPercent, end='\r' )
             sys.stdout.flush()
@@ -480,7 +471,6 @@ class Midi2Video(object):
 
             self.openNotes[newEvent.data[0]] = newEvent.data[0]
             self.noteFadeIns[str(newEvent.data[0])] = 1
-            #print ( "set note fade in for %s to 1" % str(newEvent.data[0]) )
             self.noteFadeOuts.pop( str(newEvent.data[0]), None)
 
 
@@ -489,8 +479,7 @@ class Midi2Video(object):
         compHash = "f"
 
         # TODO make fadeIn/fadeOut optional via config
-        for noteNumber in range(self.piano.keyFrom, self.piano.keyTo+1):
-            #print (noteNumber)
+        for noteNumber in range(self.piano.startNote, self.piano.endNote+1):
             offsetX = self.piano.getLeftOffsetForKeyPlacement(noteNumber)
             isHighlight = False
             highlightColor = ""
@@ -506,7 +495,7 @@ class Midi2Video(object):
                 sortedOpenNotes[noteNumber] = highlightColor
                 compHash += str(noteNumber) + highlightColor + '-'
 
-
+        # TODO: create shorter hash as filename to avoid possible filename length limit
         compPath = Path( '%s/%s.png'% (self.tempDirFrames.resolve(), compHash) )
         if(len(sortedOpenNotes) > 0):
             # separate directory for each first open note
@@ -518,7 +507,7 @@ class Midi2Video(object):
             return compPath
 
         pathStrings = []
-        for noteNumber in range(self.piano.keyFrom, self.piano.keyTo+1):
+        for noteNumber in range(self.piano.startNote, self.piano.endNote+1):
             offsetX = self.piano.getLeftOffsetForKeyPlacement(noteNumber)
             highlightColor = ""
             if noteNumber in sortedOpenNotes:
@@ -647,32 +636,32 @@ def validateConfig():
         msg = "input midifile \'%s\' does not exist" % m2v.midiFile.resolve()
         raise argparse.ArgumentTypeError(msg)
 
-    keyFrom = config.get('piano', 'keyFrom')
-    keyTo = config.get('piano', 'keyTo')
+    startNote = config.get('piano', 'startNote')
+    endNote = config.get('piano', 'endNote')
 
-    if keyFrom == 'auto' or keyTo == 'auto':
+    if startNote == 'auto' or endNote == 'auto':
         m2v.prepareNoteEvents()
 
-    if keyFrom == 'auto':
-        m2v.piano.keyFrom = m2v.lowestFoundNoteNumber
+    if startNote == 'auto':
+        m2v.piano.startNote = m2v.lowestFoundNoteNumber
 
-    if keyTo == 'auto':
-        m2v.piano.keyTo = m2v.highestFoundNoteNumber
+    if endNote == 'auto':
+        m2v.piano.endNote = m2v.highestFoundNoteNumber
 
-    m2v.piano.keyFrom = int(m2v.piano.keyFrom)
-    m2v.piano.keyTo = int(m2v.piano.keyTo)
+    m2v.piano.startNote = int(m2v.piano.startNote)
+    m2v.piano.endNote = int(m2v.piano.endNote)
     if not m2v.notesCollected:
         m2v.prepareNoteEvents()
 
 
     # ensure we have enclosed white keys
-    if m2v.piano.isWhiteKey(m2v.piano.keyFrom) == False:
-        m2v.piano.keyFrom -= 1
-    if m2v.piano.isWhiteKey(m2v.piano.keyTo) == False:
-        m2v.piano.keyTo += 1
+    if m2v.piano.isWhiteKey(m2v.piano.startNote) == False:
+        m2v.piano.startNote -= 1
+    if m2v.piano.isWhiteKey(m2v.piano.endNote) == False:
+        m2v.piano.endNote += 1
 
-    if m2v.piano.keyTo <= m2v.piano.keyFrom:
-        print( " quirks in piano key range (keyFrom/keyTo). check config...")
+    if m2v.piano.endNote <= m2v.piano.startNote:
+        print( " quirks in piano key range (startNote/endNote). check config...")
         sys.exit()
 
     m2v.piano.calculateSvgDimensions(m2v.videoWidth, m2v.videoHeight)
