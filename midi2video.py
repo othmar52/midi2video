@@ -340,10 +340,10 @@ class Midi2Video(object):
                 lastEventTick = event.tick
                 deltaMicroseconds = tempo * deltaTicks / ticksPerBeat
                 microseconds += deltaMicroseconds
+                t += event.tick
                 if event.__class__.__name__ not in ["NoteOnEvent", "NoteOffEvent"]:
                     continue
 
-                t += event.tick
                 eventMicroSecond = t * mpt
                 if eventMicroSecond > self.videoDurationMs:
                     self.videoDurationMs = eventMicroSecond
