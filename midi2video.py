@@ -15,7 +15,7 @@ import math
 import os
 import time
 from pathlib import Path
-from shutil import rmtree
+from shutil import rmtree, copyfile
 from colorsys import rgb_to_hls, hls_to_rgb
 from cairosvg import svg2png
 
@@ -294,6 +294,7 @@ class Midi2Video(object):
     def __init__(self, scriptPath, config):
         self.scriptPath = scriptPath
         self.midiFile = None
+        self.midiFileCopy = None
         self.notesToProcess = []
         self.openNotes = {}
         self.noteFadeIns = {}
@@ -308,6 +309,7 @@ class Midi2Video(object):
         self.soundFont = config.get('video', 'soundFont', fallback='')
         self.noteFadeIn = config.get('video', 'noteFadeIn', fallback='0')
         self.noteFadeOut = config.get('video', 'noteFadeOut', fallback='0')
+        self.fixTrackLength = config.get('preprocess', 'fixTrackLength', fallback='0')
 
         self.videoDurationMs = 0
         self.videoTotalFrames = 0
@@ -318,7 +320,11 @@ class Midi2Video(object):
     # we need to add an absolute microtimestamp to each note event
     # TODO: add configuration like channelWhitelist and/or channelBlacklist
     def prepareNoteEvents(self):
-        pattern = midi.FileIO.read_midifile(self.midiFile.resolve())
+        if self.midiFileCopy:
+            pattern = midi.FileIO.read_midifile(self.midiFileCopy.resolve())
+        else:
+            pattern = midi.FileIO.read_midifile(self.midiFile.resolve())
+
         tempo = 50000        # default: 120 BPM
         ticksPerBeat = pattern.resolution
         lastEventTick = 0
@@ -367,12 +373,14 @@ class Midi2Video(object):
         self.videoTotalFrames = int(math.ceil(self.videoDurationMs/1000000*self.framesPerSecond))
         self.notesCollected = True
 
-    def createTempDirs(self):
+    def createTempDir(self):
         self.tempDir = Path('%s/temp-%s' % (self.scriptPath.resolve(), self.midiFile.name))
         if self.tempDir.is_dir():
             rmtree(self.tempDir.resolve())
 
         self.tempDir.mkdir(parents=True, exist_ok=True)
+
+    def createTempSubDirs(self):
         self.tempDirFrames = Path('%s/frames' % (self.tempDir.resolve() ))
         self.tempDirFrames.mkdir(parents=True, exist_ok=True)
 
@@ -424,9 +432,12 @@ class Midi2Video(object):
         if config.get("video", "addAudio") == "1":
             audioWav = Path("%s/audio.wav" % self.tempDir.resolve())
             audioMp3 = Path("%s/audio.mp3" % self.tempDir.resolve())
+            midiFilePath = self.midiFile
+            if self.midiFileCopy:
+                midiFilePath = self.midiFileCopy
             cmd = [
                 'fluidsynth', '-F', str(audioWav.resolve()),
-                str(self.soundFont), str(self.midiFile.resolve())
+                str(self.soundFont), str(midiFilePath.resolve())
             ]
             self.generalCmd(cmd, 'convert midi file to audio.wav')
 
@@ -590,6 +601,32 @@ class Midi2Video(object):
 
         return item.replace("'", "'\"'\"'")
 
+
+    # thanks to https://github.com/Pomax/arduino-midi-recorder/blob/master/fix.py
+    def fixTrackLengthBytes(self):
+        if self.fixTrackLength != '1':
+            # disabled by config
+            return
+
+        # make a copy of the file. (keep things non-destructive)
+        self.midiFileCopy = Path(f"{self.tempDir}/{self.midiFile}.fixedlength.mid")
+        copyfile(self.midiFile, self.midiFileCopy)
+        file = open(self.midiFileCopy, "rb+")
+        file_size = os.path.getsize(self.midiFileCopy)
+        track_length = file_size - 22
+
+        field_value = bytearray([
+            (track_length & 0xFF000000) >> 24,
+            (track_length & 0x00FF0000) >> 16,
+            (track_length & 0x0000FF00) >> 8,
+            (track_length & 0x000000FF),
+        ])
+
+        file.seek(18)
+        file.write(field_value)
+        file.close()
+        logging.info(f"Updated {self.midiFileCopy} track length to {track_length}")
+
 def main():
     global m2v, config
     logging.basicConfig(level=logging.INFO)
@@ -623,14 +660,15 @@ def main():
     m2v = Midi2Video(scriptPath, config)
     m2v.midiFile = args.i
 
+    m2v.createTempDir()
+    m2v.fixTrackLengthBytes()
     # TODO given arguments have highest priority override conf values again...
 
     if validateConfig() != True:
         print ( "exiting due to config errors..." )
         sys.exit()
 
-    m2v.createTempDirs()
-
+    m2v.createTempSubDirs()
     m2v.createVideo()
 
     # TODO parse debug conf for non removal of temp files
